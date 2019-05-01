@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
 import { OrderedMap } from 'immutable';
-import { uniqueId } from 'lodash';
+import uuid from 'uuidv4';
 import filesize from 'filesize';
 import slugify from 'slugify';
 import 'rbx/index.css';
@@ -10,6 +10,33 @@ import { Section } from 'rbx';
 import api from './services/api';
 import Upload from './Components/Upload';
 import List from './Components/List';
+
+const calculateProgress = evt => (
+  parseInt(Math.round((evt.loaded * 100) / evt.total), 10));
+
+const getPayloadData = (file) => {
+  const data = new FormData();
+  data.append('file', file.file, file.name);
+  return data;
+};
+
+const getFilesMap = acceptedFiles => (
+  OrderedMap(acceptedFiles.map((file) => {
+    const id = uuid();
+    const data = {
+      file,
+      id,
+      name: slugify(file.name.toLowerCase()),
+      readableSize: filesize(file.size),
+      preview: URL.createObjectURL(file),
+      progress: 0,
+      uploaded: false,
+      error: false,
+      url: null,
+    };
+    return [id, data];
+  })));
+
 
 class App extends Component {
   state = {
@@ -26,12 +53,7 @@ class App extends Component {
   }
 
   fetchImages = (page, perPage) => {
-    api.get(`/images/${page}/${perPage}`, {
-      onDownloadProgress: (e) => {
-        const currentProgress = parseInt(Math.floor((e.loaded * 100) / e.total), 10);
-
-      },
-    })
+    api.get(`/images/${page}/${perPage}`)
       .then((response) => {
         const { data } = response.data;
         const uploadedFiles = new OrderedMap(
@@ -52,27 +74,12 @@ class App extends Component {
         );
       })
       .catch((err) => {
-        console.log(err)
+        console.log(err);
       });
   }
 
   handleUpload = (handleFiles) => {
-    const uploadedFiles = new OrderedMap(
-      handleFiles.map((file) => {
-        const id = uniqueId();
-        return [id, {
-          file,
-          id,
-          name: slugify(file.name.toLowerCase()),
-          readableSize: filesize(file.size),
-          preview: URL.createObjectURL(file),
-          progress: 0,
-          uploaded: false,
-          error: false,
-          url: null,
-        }];
-      }),
-    );
+    const uploadedFiles = getFilesMap(handleFiles);
 
     this.setState(
       ({ files }) => ({ files: files.merge(uploadedFiles) }),
@@ -83,43 +90,43 @@ class App extends Component {
   }
 
   processUpload = (uploadedFile) => {
-    const data = new FormData();
-    data.append('file', uploadedFile.file, uploadedFile.name);
+    const onUploadProgress = (e) => {
+      this.setState(
+        ({ files }) => ({
+          files: files.update(
+            uploadedFile.id, state => ({ ...state, progress: calculateProgress(e) }),
+          ),
+        }),
+      );
+    };
 
-    api.post('/images', data, {
-      onUploadProgress: (e) => {
-        const currentProgress = parseInt(Math.round((e.loaded * 100) / e.total), 10);
-        this.setState(
-          ({ files }) => ({
-            files: files.update(
-              uploadedFile.id, state => ({ ...state, progress: currentProgress }),
-            ),
-          }),
-        );
-      },
-    })
-      .then((response) => {
-        this.setState(
-          ({ files }) => ({
-            files: files.update(
-              uploadedFile.id,
-              state => ({
-                ...state,
-                uploaded: true,
-                id: response.data._id,
-                url: response.data.url,
-              }),
-            ),
-          }),
-        );
-      })
-      .catch(() => {
-        this.setState(
-          ({ files }) => ({
-            files: files.update(uploadedFile.id, state => ({ ...state, error: true })),
-          }),
-        );
-      });
+    const onUploadDone = (response) => {
+      this.setState(
+        ({ files }) => ({
+          files: files.update(
+            uploadedFile.id,
+            state => ({
+              ...state,
+              uploaded: true,
+              id: response.data._id,
+              url: response.data.url,
+            }),
+          ),
+        }),
+      );
+    };
+
+    const onUploadError = () => {
+      this.setState(
+        ({ files }) => ({
+          files: files.update(uploadedFile.id, state => ({ ...state, error: true })),
+        }),
+      );
+    };
+
+    api.post('/images', getPayloadData(uploadedFile), { onUploadProgress })
+      .then(onUploadDone)
+      .catch(onUploadError);
   }
 
   handleDelete = (id) => {
